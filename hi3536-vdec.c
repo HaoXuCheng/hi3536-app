@@ -68,7 +68,7 @@ static tea_result_t tsk_init(worker_t* worker)
         stVdecChnAttr.u32Priority  = 5;
         stVdecChnAttr.u32PicWidth  = stSize.u32Width;
         stVdecChnAttr.u32PicHeight = stSize.u32Height;
-        stVdecChnAttr.stVdecVideoAttr.enMode = VIDEO_MODE_STREAM;
+        stVdecChnAttr.stVdecVideoAttr.enMode = VIDEO_MODE_FRAME;
         stVdecChnAttr.stVdecVideoAttr.u32RefFrameNum = 3;
         stVdecChnAttr.stVdecVideoAttr.bTemporalMvpEnable = 1;
 
@@ -160,6 +160,8 @@ static tea_result_t tsk_init(worker_t* worker)
         s32Ret = SAMPLE_COMM_VO_BindVpss(VoLayer, i, i, VPSS_CHN0);
         ASSERT(0 == s32Ret);
     }
+
+    task_stream_setopt(worker, 0, stream_opt_rtp, (void*) FALSE);
 
     return TEA_RSLT_SUCCESS;
 }
