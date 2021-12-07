@@ -20,19 +20,85 @@
 // environment
 
 // settings
+// TODO: 支持 4K，一路？二路？
+static SIZE_S stSize = {1920, 1080};
 
 // internal state
-static int32_t VdCnt = 4;
-static int32_t GrpCnt = 4;
+#define DEC_CHN_NUM 4
+static int32_t VdCnt = DEC_CHN_NUM;
+static int32_t GrpCnt = DEC_CHN_NUM;
 static VO_DEV VoDev = 0;
 static VO_LAYER VoLayer = 0;
+static PAYLOAD_TYPE_E enType[DEC_CHN_NUM];
 // input
 
 // monitor: statistics
 
+// 未解除 VDEC 与 VPSS 的绑定，虽然能够工作，但是不确定有无隐藏问题。
+static void destroy_vdec_chn(VDEC_CHN VdChn)
+{
+    HI_S32 __attribute__((unused)) s32Ret;
+
+    Debug("STOP VDEC %d", VdChn);
+
+    s32Ret = HI_MPI_VDEC_StopRecvStream(VdChn);
+    ASSERT(0 == s32Ret);
+
+    s32Ret = HI_MPI_VDEC_DestroyChn(VdChn);
+    ASSERT(0 == s32Ret);
+}
+
+static void create_vdec_chn(VDEC_CHN VdChn, SIZE_S* stSize)
+{
+    HI_S32 __attribute__((unused)) s32Ret;
+    VDEC_CHN_ATTR_S stVdecChnAttr;
+
+    Debug("Create VDEC %d, enType: %d", VdChn, enType[VdChn]);
+
+    stVdecChnAttr.enType       = enType[VdChn];
+    stVdecChnAttr.u32BufSize   = stSize->u32Width * stSize->u32Height;
+    stVdecChnAttr.u32Priority  = 5;
+    stVdecChnAttr.u32PicWidth  = stSize->u32Width;
+    stVdecChnAttr.u32PicHeight = stSize->u32Height;
+    stVdecChnAttr.stVdecVideoAttr.enMode = VIDEO_MODE_FRAME;
+    stVdecChnAttr.stVdecVideoAttr.u32RefFrameNum = 3;
+    stVdecChnAttr.stVdecVideoAttr.bTemporalMvpEnable = 1;
+
+    s32Ret = HI_MPI_VDEC_CreateChn(VdChn, &stVdecChnAttr);
+    ASSERT(0 == s32Ret);
+
+    s32Ret = HI_MPI_VDEC_StartRecvStream(VdChn);
+    ASSERT(0 == s32Ret);
+
+    s32Ret = HI_MPI_VDEC_StopRecvStream(VdChn);
+    ASSERT(0 == s32Ret);
+
+    VDEC_PRTCL_PARAM_S stPrtclParam;
+
+    HI_MPI_VDEC_GetProtocolParam(VdChn, &stPrtclParam);
+    stPrtclParam.enType = enType[VdChn];
+    stPrtclParam.stH265PrtclParam.s32MaxSpsNum   = 2;
+    stPrtclParam.stH265PrtclParam.s32MaxPpsNum   = 55;
+    stPrtclParam.stH265PrtclParam.s32MaxSliceSegmentNum = 100;
+    stPrtclParam.stH265PrtclParam.s32MaxVpsNum = 10;
+
+    s32Ret = HI_MPI_VDEC_SetProtocolParam(VdChn, &stPrtclParam);
+    ASSERT(0 == s32Ret);
+
+    s32Ret = HI_MPI_VDEC_StartRecvStream(VdChn);
+    ASSERT(0 == s32Ret);
+}
+
+static void restart_vdec_chn(VDEC_CHN VdChn, SIZE_S* stSize)
+{
+    Debug("%d", VdChn);
+    destroy_vdec_chn(VdChn);
+    create_vdec_chn(VdChn, stSize);
+}
+
 static tea_result_t tsk_init(worker_t* worker)
 {
-    HI_S32 __attribute__((unused)) s32Ret = HI_FAILURE;
+    HI_S32 __attribute__((unused)) s32Ret;
     HI_S32 i;
 
     VB_CONF_S stVbConf;
@@ -52,49 +118,14 @@ static tea_result_t tsk_init(worker_t* worker)
 
     SAMPLE_COMM_SYS_Init(&stVbConf);
 
-    SIZE_S stSize = {1920, 1080};
     VB_CONF_S stModVbConf;
 
     SAMPLE_COMM_VDEC_ModCommPoolConf(&stModVbConf, PT_H265, &stSize, VdCnt);
     s32Ret = SAMPLE_COMM_VDEC_InitModCommVb(&stModVbConf);
 
-    PAYLOAD_TYPE_E enType = PT_H265;
-    VDEC_CHN_ATTR_S stVdecChnAttr;
-
     for(i=0; i<VdCnt; i++)
     {
-        stVdecChnAttr.enType       = enType;
-        stVdecChnAttr.u32BufSize   = stSize.u32Width * stSize.u32Height;
-        stVdecChnAttr.u32Priority  = 5;
-        stVdecChnAttr.u32PicWidth  = stSize.u32Width;
-        stVdecChnAttr.u32PicHeight = stSize.u32Height;
-        stVdecChnAttr.stVdecVideoAttr.enMode = VIDEO_MODE_FRAME;
-        stVdecChnAttr.stVdecVideoAttr.u32RefFrameNum = 3;
-        stVdecChnAttr.stVdecVideoAttr.bTemporalMvpEnable = 1;
-
-        s32Ret = HI_MPI_VDEC_CreateChn(i, &stVdecChnAttr);
-        ASSERT(0 == s32Ret);
-
-        s32Ret = HI_MPI_VDEC_StartRecvStream(i);
-        ASSERT(0 == s32Ret);
-
-        s32Ret = HI_MPI_VDEC_StopRecvStream(i);
-        ASSERT(0 == s32Ret);
-
-        VDEC_PRTCL_PARAM_S stPrtclParam;
-
-        HI_MPI_VDEC_GetProtocolParam(i, &stPrtclParam);
-        stPrtclParam.enType = enType;
-        stPrtclParam.stH265PrtclParam.s32MaxSpsNum   = 2;
-        stPrtclParam.stH265PrtclParam.s32MaxPpsNum   = 55;
-        stPrtclParam.stH265PrtclParam.s32MaxSliceSegmentNum = 100;
-        stPrtclParam.stH265PrtclParam.s32MaxVpsNum = 10;
-
-        s32Ret = HI_MPI_VDEC_SetProtocolParam(i, &stPrtclParam);
-        ASSERT(0 == s32Ret);
-
-        s32Ret = HI_MPI_VDEC_StartRecvStream(i);
-        ASSERT(0 == s32Ret);
+        create_vdec_chn(i, &stSize);
     }
 
     // start VPSS
@@ -199,6 +230,18 @@ static tea_result_t tsk_repeat(worker_t* worker)
 
     VdChn = generic_rtp_header->extension.stream_index;
 
+    // TODO: 应该等待下一 I 帧到来再开始解码。
+    if(PT_H264 == enType[VdChn] && stream_type_h265 == generic_rtp_header->frame.type)
+    {
+        enType[VdChn] = PT_H265;
+        restart_vdec_chn(VdChn, &stSize);
+    }
+    else if(PT_H265 == enType[VdChn] && stream_type_h264 == generic_rtp_header->frame.type)
+    {
+        enType[VdChn] = PT_H264;
+        restart_vdec_chn(VdChn, &stSize);
+    }
+
     VDEC_STREAM_S stStream;
 
     stStream.u64PTS       = generic_rtp_header->frame.timestamp;
@@ -286,18 +329,13 @@ static tea_result_t tsk_cleanup(worker_t* worker)
     return TEA_RSLT_SUCCESS;
 }
 
-static tea_result_t init(void)
-{
-    return TEA_RSLT_SUCCESS;
-}
-
-static tea_result_t fini(void)
-{
-    return TEA_RSLT_SUCCESS;
-}
-
 static tea_result_t create(struct N_node* nn)
 {
+    int i;
+    for(i=0; i<DEC_CHN_NUM; i++)
+    {
+        enType[i] = PT_H265;
+    }
     return TEA_RSLT_SUCCESS;
 }
 
@@ -327,10 +365,6 @@ tea_app_t hi3536_vdec =
 {
 version:
     TEA_VERSION(0,5),
-init:
-    init,
-fini:
-    fini,
 create:
     create,
 destroy:
