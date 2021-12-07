@@ -32,7 +32,7 @@ static VO_LAYER VoLayer = 0;
 
 static tea_result_t tsk_init(worker_t* worker)
 {
-    HI_S32 s32Ret = HI_FAILURE;
+    HI_S32 __attribute__((unused)) s32Ret = HI_FAILURE;
     HI_S32 i;
 
     VB_CONF_S stVbConf;
@@ -174,6 +174,7 @@ static tea_result_t tsk_repeat(worker_t* worker)
     timeout_t wait_time = {1, 0};
     int32_t ret;
     int32_t ret_val = TEA_RSLT_SUCCESS;
+    VDEC_CHN VdChn;
 
     ret = task_stream_get_frame_3_retry(worker, 0, &stream_frame, &wait_time, &flags, (rtp_hdr_t**) &generic_rtp_header);
     if(RESULT_FAIL(ret))
@@ -183,7 +184,9 @@ static tea_result_t tsk_repeat(worker_t* worker)
 
     if(0 == (flags & frame_flag_rtp)
             || 0 == generic_rtp_header->rtp_hdr.x
-            || TEA_GENERIC_PROFILE != ntohs(generic_rtp_header->profile))
+            || TEA_GENERIC_PROFILE != ntohs(generic_rtp_header->profile)
+            || 0 == (generic_rtp_header->frame.flags & FRAME_FLAG_EXTENSION)
+            || generic_rtp_header->extension.stream_index >= VdCnt )
     {
         goto EXIT;
     }
@@ -193,6 +196,8 @@ static tea_result_t tsk_repeat(worker_t* worker)
     {
         goto EXIT;
     }
+
+    VdChn = generic_rtp_header->extension.stream_index;
 
     VDEC_STREAM_S stStream;
 
@@ -208,14 +213,14 @@ static tea_result_t tsk_repeat(worker_t* worker)
     stStream.bEndOfFrame  = HI_TRUE;
     stStream.bEndOfStream = HI_FALSE;
 
-    ret = HI_MPI_VDEC_SendStream(0, &stStream, 1000);
+    ret = HI_MPI_VDEC_SendStream(VdChn, &stStream, 1000);
     if(0 != ret)
     {
         Debug("%x", ret);
     }
 
     VDEC_CHN_STAT_S status;
-    ret = HI_MPI_VDEC_Query(0, &status);
+    ret = HI_MPI_VDEC_Query(VdChn, &status);
     if(0 == ret)
     {
     }
