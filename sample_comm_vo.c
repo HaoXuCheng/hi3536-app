@@ -153,7 +153,7 @@ HI_S32 SAMPLE_COMM_VO_StopLayer(VO_LAYER VoLayer)
     return s32Ret;
 }
 
-HI_S32 SAMPLE_COMM_VO_StartChn(VO_LAYER VoLayer, SAMPLE_VO_MODE_E enMode)
+HI_S32 SAMPLE_COMM_VO_StartChn(VO_LAYER VoLayer, SAMPLE_VO_MODE_E enMode, VO_CHN VoChnEnabled)
 {
     HI_S32 i;
     HI_S32 s32Ret = HI_SUCCESS;
@@ -227,7 +227,18 @@ HI_S32 SAMPLE_COMM_VO_StartChn(VO_LAYER VoLayer, SAMPLE_VO_MODE_E enMode)
         stChnAttr.u32Priority       = 0;
         stChnAttr.bDeflicker        = HI_FALSE;
 
-        s32Ret = HI_MPI_VO_SetChnAttr(VoLayer, i, &stChnAttr);
+        VO_CHN VoChn;
+
+        if(VO_MODE_1MUX == enMode)
+        {
+            VoChn = VoChnEnabled;
+        }
+        else
+        {
+            VoChn = i;
+        }
+
+        s32Ret = HI_MPI_VO_SetChnAttr(VoLayer, VoChn, &stChnAttr);
         if (s32Ret != HI_SUCCESS)
         {
             printf("%s(%d):failed with %#x!\n",\
@@ -235,7 +246,7 @@ HI_S32 SAMPLE_COMM_VO_StartChn(VO_LAYER VoLayer, SAMPLE_VO_MODE_E enMode)
             return HI_FAILURE;
         }
 
-        s32Ret = HI_MPI_VO_EnableChn(VoLayer, i);
+        s32Ret = HI_MPI_VO_EnableChn(VoLayer, VoChn);
         if (s32Ret != HI_SUCCESS)
         {
             SAMPLE_PRT("failed with %#x!\n", s32Ret);
@@ -245,7 +256,7 @@ HI_S32 SAMPLE_COMM_VO_StartChn(VO_LAYER VoLayer, SAMPLE_VO_MODE_E enMode)
     return HI_SUCCESS;
 }
 
-HI_S32 SAMPLE_COMM_VO_StopChn(VO_LAYER VoLayer, SAMPLE_VO_MODE_E enMode)
+HI_S32 SAMPLE_COMM_VO_StopChn(VO_LAYER VoLayer, SAMPLE_VO_MODE_E enMode, VO_CHN VoChnEnabled)
 {
     HI_S32 i;
     HI_S32 s32Ret = HI_SUCCESS;
@@ -303,7 +314,18 @@ HI_S32 SAMPLE_COMM_VO_StopChn(VO_LAYER VoLayer, SAMPLE_VO_MODE_E enMode)
 
     for (i=0; i<u32WndNum; i++)
     {
-        s32Ret = HI_MPI_VO_DisableChn(VoLayer, i);
+        VO_CHN VoChn;
+
+        if(VO_MODE_1MUX == enMode)
+        {
+            VoChn = VoChnEnabled;
+        }
+        else
+        {
+            VoChn = i;
+        }
+
+        s32Ret = HI_MPI_VO_DisableChn(VoLayer, VoChn);
         if (s32Ret != HI_SUCCESS)
         {
             SAMPLE_PRT("failed with %#x!\n", s32Ret);

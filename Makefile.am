@@ -7,8 +7,8 @@ libhi3536_vdec_la_LDFLAGS=-lmpi -lhdmi -ljpeg -ldnvqe -lVoiceEngine -lupvqe
 #testdir=$(prefix)/etc/tea/test
 #test_DATA=hi3536_vdec.xml.m
 
-#schemadir=$(prefix)/etc/tea/schema
-#schema_DATA=hi3536_vdec.s
+schemadir=$(prefix)/etc/tea/schema
+schema_DATA=hi3536_vdec.s
 
 initdir=$(prefix)/etc/rc.init.d
 init_SCRIPTS=03load3536
