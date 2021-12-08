@@ -57,8 +57,24 @@ static int current_vo_chn[2];
 
 // monitor: statistics
 
+// 约定：每个 VO 对应 4 通道。
+HI_BOOL is_chn_enabled(int chn)
+{
+    int vo = chn / 4;
+    if(VO_MODE_4MUX == vo_mode[vo])
+    {
+        return TRUE;
+    }
+    ASSERT(VO_MODE_1MUX == vo_mode[vo]);
+    if(chn == vo_chn[vo])
+    {
+        return TRUE;
+    }
+    return FALSE;
+}
+
 // 未解除 VDEC 与 VPSS 的绑定，虽然能够工作，但是不确定有无隐藏问题。
-static void destroy_vdec_chn(VDEC_CHN VdChn)
+static void stop_vdec_chn(VDEC_CHN VdChn, HI_BOOL bNoDestroy)
 {
     HI_S32 __attribute__((unused)) s32Ret;
 
@@ -67,56 +83,93 @@ static void destroy_vdec_chn(VDEC_CHN VdChn)
     s32Ret = HI_MPI_VDEC_StopRecvStream(VdChn);
     ASSERT(0 == s32Ret);
 
-    s32Ret = HI_MPI_VDEC_DestroyChn(VdChn);
-    ASSERT(0 == s32Ret);
+    if(!bNoDestroy)
+    {
+        s32Ret = HI_MPI_VDEC_DestroyChn(VdChn);
+        ASSERT(0 == s32Ret);
+    }
 }
 
-static void create_vdec_chn(VDEC_CHN VdChn, SIZE_S* stSize)
+static void start_vdec_chn(VDEC_CHN VdChn, SIZE_S* stSize, HI_BOOL bNoCreate)
 {
     HI_S32 __attribute__((unused)) s32Ret;
-    VDEC_CHN_ATTR_S stVdecChnAttr;
 
-    Debug("Create VDEC %d, enType: %d", VdChn, enType[VdChn]);
+    if(!bNoCreate)
+    {
+        VDEC_CHN_ATTR_S stVdecChnAttr;
 
-    stVdecChnAttr.enType       = enType[VdChn];
-    stVdecChnAttr.u32BufSize   = stSize->u32Width * stSize->u32Height;
-    stVdecChnAttr.u32Priority  = 5;
-    stVdecChnAttr.u32PicWidth  = stSize->u32Width;
-    stVdecChnAttr.u32PicHeight = stSize->u32Height;
-    stVdecChnAttr.stVdecVideoAttr.enMode = VIDEO_MODE_FRAME;
-    stVdecChnAttr.stVdecVideoAttr.u32RefFrameNum = 3;
-    stVdecChnAttr.stVdecVideoAttr.bTemporalMvpEnable = 1;
+        Debug("Create VDEC %d, enType: %d", VdChn, enType[VdChn]);
 
-    s32Ret = HI_MPI_VDEC_CreateChn(VdChn, &stVdecChnAttr);
-    ASSERT(0 == s32Ret);
+        stVdecChnAttr.enType       = enType[VdChn];
+        stVdecChnAttr.u32BufSize   = stSize->u32Width * stSize->u32Height;
+        stVdecChnAttr.u32Priority  = 5;
+        stVdecChnAttr.u32PicWidth  = stSize->u32Width;
+        stVdecChnAttr.u32PicHeight = stSize->u32Height;
+        stVdecChnAttr.stVdecVideoAttr.enMode = VIDEO_MODE_FRAME;
+        stVdecChnAttr.stVdecVideoAttr.u32RefFrameNum = 3;
+        stVdecChnAttr.stVdecVideoAttr.bTemporalMvpEnable = 1;
 
-    s32Ret = HI_MPI_VDEC_StartRecvStream(VdChn);
-    ASSERT(0 == s32Ret);
+        s32Ret = HI_MPI_VDEC_CreateChn(VdChn, &stVdecChnAttr);
+        ASSERT(0 == s32Ret);
 
-    s32Ret = HI_MPI_VDEC_StopRecvStream(VdChn);
-    ASSERT(0 == s32Ret);
+        s32Ret = HI_MPI_VDEC_StartRecvStream(VdChn);
+        ASSERT(0 == s32Ret);
 
-    VDEC_PRTCL_PARAM_S stPrtclParam;
+        s32Ret = HI_MPI_VDEC_StopRecvStream(VdChn);
+        ASSERT(0 == s32Ret);
 
-    HI_MPI_VDEC_GetProtocolParam(VdChn, &stPrtclParam);
-    stPrtclParam.enType = enType[VdChn];
-    stPrtclParam.stH265PrtclParam.s32MaxSpsNum   = 2;
-    stPrtclParam.stH265PrtclParam.s32MaxPpsNum   = 55;
-    stPrtclParam.stH265PrtclParam.s32MaxSliceSegmentNum = 100;
-    stPrtclParam.stH265PrtclParam.s32MaxVpsNum = 10;
+        VDEC_PRTCL_PARAM_S stPrtclParam;
 
-    s32Ret = HI_MPI_VDEC_SetProtocolParam(VdChn, &stPrtclParam);
-    ASSERT(0 == s32Ret);
+        HI_MPI_VDEC_GetProtocolParam(VdChn, &stPrtclParam);
+        stPrtclParam.enType = enType[VdChn];
+        stPrtclParam.stH265PrtclParam.s32MaxSpsNum   = 2;
+        stPrtclParam.stH265PrtclParam.s32MaxPpsNum   = 55;
+        stPrtclParam.stH265PrtclParam.s32MaxSliceSegmentNum = 100;
+        stPrtclParam.stH265PrtclParam.s32MaxVpsNum = 10;
 
-    s32Ret = HI_MPI_VDEC_StartRecvStream(VdChn);
-    ASSERT(0 == s32Ret);
+        s32Ret = HI_MPI_VDEC_SetProtocolParam(VdChn, &stPrtclParam);
+        ASSERT(0 == s32Ret);
+    }
+
+    if(is_chn_enabled(VdChn))
+    {
+        if(bNoCreate)
+        {
+            Debug("RESET VDEC %d", VdChn);
+            s32Ret = HI_MPI_VDEC_ResetChn(VdChn);
+            ASSERT(0 == s32Ret);
+        }
+        Debug("START VDEC %d", VdChn);
+        s32Ret = HI_MPI_VDEC_StartRecvStream(VdChn);
+        ASSERT(0 == s32Ret);
+    }
 }
 
 static void restart_vdec_chn(VDEC_CHN VdChn, SIZE_S* stSize)
 {
     Debug("%d", VdChn);
-    destroy_vdec_chn(VdChn);
-    create_vdec_chn(VdChn, stSize);
+    stop_vdec_chn(VdChn, FALSE);
+    start_vdec_chn(VdChn, stSize, FALSE);
+}
+
+static void VDEC_Start(VO_LAYER VoLayer, HI_BOOL bNoCreate)
+{
+    int i;
+    for(i=0; i<VdCnt; i++)
+    {
+        VDEC_CHN VdChn = i + VoLayer*VdChn;
+        start_vdec_chn(VdChn, &stSize, bNoCreate);
+    }
+}
+
+static void VDEC_Stop(VO_LAYER VoLayer, HI_BOOL bNoDestroy)
+{
+    int i;
+    for(i=0; i<VdCnt; i++)
+    {
+        VDEC_CHN VdChn = i + VoLayer*VdChn;
+        stop_vdec_chn(VdChn, bNoDestroy);
+    }
 }
 
 static tea_result_t tsk_init(worker_t* worker)
@@ -152,10 +205,8 @@ static tea_result_t tsk_init(worker_t* worker)
     SAMPLE_COMM_VDEC_ModCommPoolConf(&stModVbConf, PT_H265, &stSize, VdCnt);
     s32Ret = SAMPLE_COMM_VDEC_InitModCommVb(&stModVbConf);
 
-    for(i=0; i<VdCnt; i++)
-    {
-        create_vdec_chn(i, &stSize);
-    }
+    // start VDEC
+    VDEC_Start(VoLayer[0], FALSE);
 
     // start VPSS
     SAMPLE_COMM_VPSS_Start(VoLayer[0], GrpCnt, &stSize, 1, NULL, vo_mode[0], FALSE);
@@ -214,21 +265,6 @@ static tea_result_t tsk_init(worker_t* worker)
     return TEA_RSLT_SUCCESS;
 }
 
-HI_BOOL is_chn_enabled(int chn)
-{
-    int vo = chn / 4;
-    if(VO_MODE_4MUX == vo_mode[vo])
-    {
-        return TRUE;
-    }
-    ASSERT(VO_MODE_1MUX == vo_mode[vo]);
-    if(chn == vo_chn[vo])
-    {
-        return TRUE;
-    }
-    return FALSE;
-}
-
 static void apply_vo_mode(int vo)
 {
     int32_t ret;
@@ -238,6 +274,9 @@ static void apply_vo_mode(int vo)
 
     ret = SAMPLE_COMM_VPSS_Stop(VoLayer[vo], GrpCnt, 1, TRUE);
     ASSERT(0 == ret);
+
+    VDEC_Stop(VoLayer[vo], TRUE);
+    VDEC_Start(VoLayer[vo], TRUE);
 
     ret = SAMPLE_COMM_VPSS_Start(VoLayer[vo], GrpCnt, &stSize, 1, NULL, vo_mode[vo], TRUE);
     ASSERT(0 == ret);
@@ -344,11 +383,6 @@ static tea_result_t tsk_cleanup(worker_t* worker)
 {
     HI_S32  i;
     HI_S32 s32Ret;
-
-    for(i=0; i<VdCnt; i++)
-    {
-        HI_MPI_VDEC_StopRecvStream(i);
-    }
 
     for(i=0; i<GrpCnt; i++)
     {
