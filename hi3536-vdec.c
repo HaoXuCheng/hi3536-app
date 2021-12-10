@@ -10,8 +10,9 @@
 // VDEC： 视频解码器，本应用使用 8 个视频解码通道，编号 0~7，分别对应 VPSS GROUP 0~7。
 // VPSS： 视频处理子系统，本应用使用 8 个组（Group），每组包含一个通道，编号 0~7，分别对应视频输出通道 0~7。
 // VO：   视频输出，本应用使用 2 个视频层，编号 0、1，分别对应 VHD0、VHD1；
-//        每个视频层包含 4 个视频输出通道；
-//        视频层 0 包含视频输出通道 0~3，视频层 1 包含视频输出通道 4~7。
+//        每个视频层包含 4 个视频输出通道，每个视频层的视频输出通道编号都是 0~3。参考[1]。
+// 参考
+// 1 Hi3536 V100R001C02SPC060/01.software/board/Hi3536_SDK_V2.0.6.0/mpp_single/sample/common/sample_comm_vo.c
 #include <tea/tea.h>
 #include "hi_common.h"
 #include "hi_comm_sys.h"
@@ -35,21 +36,19 @@
 
 // settings
 // 2 路视频输出（VO）：0-HDMI、1-BT1120。
-int vo_mode[2];
+static int vo_mode[2];
 // 单窗口模式时使能的通道。
 // 会要求不使能任何通道吗？
-int vo_chn[2];
+static int vo_chn[2]; // 取值 0~3
+static int IntfType[2];
 
 // TODO: 支持 4K，一路？二路？
 static SIZE_S stSize = {1920, 1080};
 
 // internal state
-#define DEC_CHN_NUM 4
-static int32_t VdCnt = DEC_CHN_NUM;
-static int32_t GrpCnt = DEC_CHN_NUM;
-static VO_DEV VoDev[2] = {0,1};
-static VO_LAYER VoLayer[2] = {0,1};
-static PAYLOAD_TYPE_E enType[DEC_CHN_NUM];
+#define CHN_NUM 4       // 每块屏幕最多显示的窗口数量。
+#define CHN_NUM_TOTAL   (2*CHN_NUM)
+static PAYLOAD_TYPE_E enType[CHN_NUM_TOTAL];
 static int current_vo_mode[2];
 static int current_vo_chn[2];
 
@@ -58,9 +57,8 @@ static int current_vo_chn[2];
 // monitor: statistics
 
 // 约定：每个 VO 对应 4 通道。
-HI_BOOL is_chn_enabled(int chn)
+HI_BOOL is_chn_enabled(int vo, int chn)
 {
-    int vo = chn / 4;
     if(VO_MODE_4MUX == vo_mode[vo])
     {
         return TRUE;
@@ -131,7 +129,7 @@ static void start_vdec_chn(VDEC_CHN VdChn, SIZE_S* stSize, HI_BOOL bNoCreate)
         ASSERT(0 == s32Ret);
     }
 
-    if(is_chn_enabled(VdChn))
+    if(is_chn_enabled(VdChn/CHN_NUM, VdChn%CHN_NUM))
     {
         if(bNoCreate)
         {
@@ -155,9 +153,9 @@ static void restart_vdec_chn(VDEC_CHN VdChn, SIZE_S* stSize)
 static void VDEC_Start(VO_LAYER VoLayer, HI_BOOL bNoCreate)
 {
     int i;
-    for(i=0; i<VdCnt; i++)
+    for(i=0; i<CHN_NUM; i++)
     {
-        VDEC_CHN VdChn = i + VoLayer*VdChn;
+        VDEC_CHN VdChn = i + VoLayer*CHN_NUM;
         start_vdec_chn(VdChn, &stSize, bNoCreate);
     }
 }
@@ -165,9 +163,9 @@ static void VDEC_Start(VO_LAYER VoLayer, HI_BOOL bNoCreate)
 static void VDEC_Stop(VO_LAYER VoLayer, HI_BOOL bNoDestroy)
 {
     int i;
-    for(i=0; i<VdCnt; i++)
+    for(i=0; i<CHN_NUM; i++)
     {
-        VDEC_CHN VdChn = i + VoLayer*VdChn;
+        VDEC_CHN VdChn = i + VoLayer*CHN_NUM;
         stop_vdec_chn(VdChn, bNoDestroy);
     }
 }
@@ -176,12 +174,7 @@ static tea_result_t tsk_init(worker_t* worker)
 {
     HI_S32 __attribute__((unused)) s32Ret;
     HI_S32 i;
-
-    for(i=0; i<2; i++)
-    {
-        current_vo_mode[i] = vo_mode[i];
-        current_vo_chn[i] = vo_chn[i];
-    }
+    HI_S32 j;
 
     VB_CONF_S stVbConf;
 
@@ -194,70 +187,94 @@ static tea_result_t tsk_init(worker_t* worker)
     stVbConf.astCommPool[1].u32BlkSize = 3840*2160;
     stVbConf.astCommPool[1].u32BlkCnt	 = 2*6;
     stVbConf.astCommPool[2].u32BlkSize = (1920 * 1080 * 3) >> 1;
-    stVbConf.astCommPool[2].u32BlkCnt	 = 8*6;
+    stVbConf.astCommPool[2].u32BlkCnt	 = 6*CHN_NUM_TOTAL;
     stVbConf.astCommPool[3].u32BlkSize = 1920*1080;
-    stVbConf.astCommPool[3].u32BlkCnt	 = 8*6;
+    stVbConf.astCommPool[3].u32BlkCnt	 = 6*CHN_NUM_TOTAL;
 
     SAMPLE_COMM_SYS_Init(&stVbConf);
 
     VB_CONF_S stModVbConf;
 
-    SAMPLE_COMM_VDEC_ModCommPoolConf(&stModVbConf, PT_H265, &stSize, VdCnt);
+    SAMPLE_COMM_VDEC_ModCommPoolConf(&stModVbConf, PT_H265, &stSize, CHN_NUM_TOTAL);
     s32Ret = SAMPLE_COMM_VDEC_InitModCommVb(&stModVbConf);
 
-    // start VDEC
-    VDEC_Start(VoLayer[0], FALSE);
-
-    // start VPSS
-    SAMPLE_COMM_VPSS_Start(VoLayer[0], GrpCnt, &stSize, 1, NULL, vo_mode[0], FALSE);
-
-    // start VO
-    VO_PUB_ATTR_S stVoPubAttr;
-
-    stVoPubAttr.enIntfSync = VO_OUTPUT_3840x2160_30;
-    stVoPubAttr.enIntfType = VO_INTF_HDMI;
-
-    s32Ret = HI_MPI_VO_SetPubAttr(VoDev[0], &stVoPubAttr);
+    int BgColor;
+    s32Ret = xT_read_int_3(worker->nn_inst, &BgColor, "BgColor");
     ASSERT(0 == s32Ret);
 
-    s32Ret = HI_MPI_VO_Enable(VoDev[0]);
-    ASSERT(0 == s32Ret);
+    for(i=0; i<2; i++)
+    {
+        current_vo_mode[i] = vo_mode[i];
+        current_vo_chn[i] = vo_chn[i];
 
-    s32Ret = SAMPLE_COMM_VO_HdmiStart(stVoPubAttr.enIntfSync);
-    ASSERT(0 == s32Ret);
+        // start VDEC
+        VDEC_Start(i, FALSE);
 
-    VO_VIDEO_LAYER_ATTR_S stVoLayerAttr;
-    s32Ret = SAMPLE_COMM_VO_GetWH(stVoPubAttr.enIntfSync, \
-        &stVoLayerAttr.stDispRect.u32Width, &stVoLayerAttr.stDispRect.u32Height, &stVoLayerAttr.u32DispFrmRt);
-    ASSERT(0 == s32Ret);
+        // start VPSS
+        SAMPLE_COMM_VPSS_Start(i, CHN_NUM, &stSize, 1, NULL, vo_mode[i], FALSE);
 
-    stVoLayerAttr.stImageSize.u32Width = stVoLayerAttr.stDispRect.u32Width;
-    stVoLayerAttr.stImageSize.u32Height = stVoLayerAttr.stDispRect.u32Height;
-    stVoLayerAttr.bClusterMode = HI_FALSE;
-    stVoLayerAttr.bDoubleFrame = HI_FALSE;
-    stVoLayerAttr.enPixFormat = SAMPLE_PIXEL_FORMAT;
+        // start VO
+        VO_PUB_ATTR_S stVoPubAttr;
+        int IntfSync;
 
-    s32Ret = HI_MPI_VO_SetVideoLayerAttr(VoLayer[0], &stVoLayerAttr);
-    ASSERT(0 == s32Ret);
+        s32Ret = xT_read_int_3(worker->nn_inst, &IntfSync, "vo[%d]/IntfSync", i+1);
+        ASSERT(0 == s32Ret);
 
-    s32Ret = HI_MPI_VO_EnableVideoLayer(VoLayer[0]);
-    ASSERT(0 == s32Ret);
+        s32Ret = xT_read_int_3(worker->nn_inst, IntfType+i, "vo[%d]/IntfType", i+1);
+        ASSERT(0 == s32Ret);
 
-    s32Ret = SAMPLE_COMM_VO_StartChn(VoLayer[0], vo_mode[0], vo_chn[0]);
-    ASSERT(0 == s32Ret);
+        stVoPubAttr.enIntfSync = IntfSync;
+        stVoPubAttr.enIntfType = IntfType[i];
+        stVoPubAttr.u32BgColor = BgColor;
+
+        s32Ret = HI_MPI_VO_SetPubAttr(i, &stVoPubAttr);
+        ASSERT(0 == s32Ret);
+
+        s32Ret = HI_MPI_VO_Enable(i);
+        ASSERT(0 == s32Ret);
+
+        if(IntfType[i] == VO_INTF_HDMI)
+        {
+            s32Ret = SAMPLE_COMM_VO_HdmiStart(stVoPubAttr.enIntfSync);
+            ASSERT(0 == s32Ret);
+        }
+
+        VO_VIDEO_LAYER_ATTR_S stVoLayerAttr;
+        s32Ret = SAMPLE_COMM_VO_GetWH(stVoPubAttr.enIntfSync, \
+                                      &stVoLayerAttr.stDispRect.u32Width, &stVoLayerAttr.stDispRect.u32Height, &stVoLayerAttr.u32DispFrmRt);
+        ASSERT(0 == s32Ret);
+
+        stVoLayerAttr.stImageSize.u32Width = stVoLayerAttr.stDispRect.u32Width;
+        stVoLayerAttr.stImageSize.u32Height = stVoLayerAttr.stDispRect.u32Height;
+        stVoLayerAttr.bClusterMode = HI_FALSE;
+        stVoLayerAttr.bDoubleFrame = HI_FALSE;
+        stVoLayerAttr.enPixFormat = SAMPLE_PIXEL_FORMAT;
+
+        s32Ret = HI_MPI_VO_SetVideoLayerAttr(i, &stVoLayerAttr);
+        ASSERT(0 == s32Ret);
+
+        s32Ret = HI_MPI_VO_EnableVideoLayer(i);
+        ASSERT(0 == s32Ret);
+
+        s32Ret = SAMPLE_COMM_VO_StartChn(i, vo_mode[i], vo_chn[i]);
+        ASSERT(0 == s32Ret);
+    }
 
     // VDEC bind VPSS
-    for(i=0; i<VdCnt; i++)
+    for(i=0; i<CHN_NUM_TOTAL; i++)
     {
         s32Ret = SAMPLE_COMM_VDEC_BindVpss(i, i);
         ASSERT(0 == s32Ret);
     }
 
     // VPSS bind VO
-    for(i=0; i<GrpCnt; i++)
+    for(i=0; i<2; i++)
     {
-        s32Ret = SAMPLE_COMM_VO_BindVpss(VoLayer[0], i, i, VPSS_CHN0);
-        ASSERT(0 == s32Ret);
+        for(j=0; j<CHN_NUM; j++)
+        {
+            s32Ret = SAMPLE_COMM_VO_BindVpss(i, j, j+i*CHN_NUM, VPSS_CHN0);
+            ASSERT(0 == s32Ret);
+        }
     }
 
     task_stream_setopt(worker, 0, stream_opt_rtp, (void*) FALSE);
@@ -267,21 +284,21 @@ static tea_result_t tsk_init(worker_t* worker)
 
 static void apply_vo_mode(int vo)
 {
-    int32_t ret;
+    int32_t __attribute__((unused)) ret;
 
-    ret = SAMPLE_COMM_VO_StopChn(VoLayer[vo], current_vo_mode[vo], current_vo_chn[vo]);
+    ret = SAMPLE_COMM_VO_StopChn(vo, current_vo_mode[vo], current_vo_chn[vo]);
     ASSERT(0 == ret);
 
-    ret = SAMPLE_COMM_VPSS_Stop(VoLayer[vo], GrpCnt, 1, TRUE);
+    ret = SAMPLE_COMM_VPSS_Stop(vo, CHN_NUM, 1, TRUE);
     ASSERT(0 == ret);
 
-    VDEC_Stop(VoLayer[vo], TRUE);
-    VDEC_Start(VoLayer[vo], TRUE);
+    VDEC_Stop(vo, TRUE);
+    VDEC_Start(vo, TRUE);
 
-    ret = SAMPLE_COMM_VPSS_Start(VoLayer[vo], GrpCnt, &stSize, 1, NULL, vo_mode[vo], TRUE);
+    ret = SAMPLE_COMM_VPSS_Start(vo, CHN_NUM, &stSize, 1, NULL, vo_mode[vo], TRUE);
     ASSERT(0 == ret);
 
-    ret = SAMPLE_COMM_VO_StartChn(VoLayer[vo], vo_mode[vo], vo_chn[vo]);
+    ret = SAMPLE_COMM_VO_StartChn(vo, vo_mode[vo], vo_chn[vo]);
     ASSERT(0 == ret);
 }
 
@@ -317,7 +334,7 @@ static tea_result_t tsk_repeat(worker_t* worker)
             || 0 == generic_rtp_header->rtp_hdr.x
             || TEA_GENERIC_PROFILE != ntohs(generic_rtp_header->profile)
             || 0 == (generic_rtp_header->frame.flags & FRAME_FLAG_EXTENSION)
-            || generic_rtp_header->extension.stream_index >= VdCnt )
+            || generic_rtp_header->extension.stream_index >= CHN_NUM_TOTAL )
     {
         goto EXIT;
     }
@@ -330,7 +347,7 @@ static tea_result_t tsk_repeat(worker_t* worker)
 
     VdChn = generic_rtp_header->extension.stream_index;
 
-    if(!is_chn_enabled(VdChn))
+    if(!is_chn_enabled(VdChn/CHN_NUM, VdChn%CHN_NUM))
     {
         goto EXIT;
     }
@@ -364,7 +381,7 @@ static tea_result_t tsk_repeat(worker_t* worker)
     ret = HI_MPI_VDEC_SendStream(VdChn, &stStream, 1000);
     if(0 != ret)
     {
-        Debug("%x", ret);
+        Debug("Chn %d: %x", VdChn, ret);
     }
 
 //    VDEC_CHN_STAT_S status;
@@ -382,48 +399,56 @@ EXIT:
 static tea_result_t tsk_cleanup(worker_t* worker)
 {
     HI_S32  i;
-    HI_S32 s32Ret;
+    HI_S32  j;
+    HI_S32 __attribute__((unused)) s32Ret;
 
-    for(i=0; i<GrpCnt; i++)
+    for(i=0; i<2; i++)
     {
-        MPP_CHN_S stSrcChn;
-        MPP_CHN_S stDestChn;
+        for(j=0; j<CHN_NUM; j++)
+        {
+            MPP_CHN_S stSrcChn;
+            MPP_CHN_S stDestChn;
 
-        stSrcChn.enModId = HI_ID_VPSS;
-        stSrcChn.s32DevId = i;
-        stSrcChn.s32ChnId = VPSS_CHN0;
+            stSrcChn.enModId = HI_ID_VPSS;
+            stSrcChn.s32DevId = j+i*CHN_NUM;
+            stSrcChn.s32ChnId = VPSS_CHN0;
 
-        stDestChn.enModId = HI_ID_VOU;
-        stDestChn.s32DevId = VoLayer[0];
-        stDestChn.s32ChnId = i;
+            stDestChn.enModId = HI_ID_VOU;
+            stDestChn.s32DevId = i;
+            stDestChn.s32ChnId = j;
 
-        s32Ret = HI_MPI_SYS_UnBind(&stSrcChn, &stDestChn);
-        ASSERT(0 == s32Ret);
+            s32Ret = HI_MPI_SYS_UnBind(&stSrcChn, &stDestChn);
+            ASSERT(0 == s32Ret);
+        }
+
+        for(j=0; j<CHN_NUM; j++)
+        {
+            MPP_CHN_S stSrcChn;
+            MPP_CHN_S stDestChn;
+
+            stSrcChn.enModId = HI_ID_VDEC;
+            stSrcChn.s32DevId = 0;
+            stSrcChn.s32ChnId = j+i*CHN_NUM;
+
+            stDestChn.enModId = HI_ID_VPSS;
+            stDestChn.s32DevId = j+i*CHN_NUM;
+            stDestChn.s32ChnId = 0;
+
+            s32Ret = HI_MPI_SYS_UnBind(&stSrcChn, &stDestChn);
+            ASSERT(0 == s32Ret);
+        }
+
+        SAMPLE_COMM_VO_StopChn(i, current_vo_mode[i], current_vo_chn[i]);
+        SAMPLE_COMM_VO_StopLayer(i);
+        if(IntfType[i] == VO_INTF_HDMI)
+        {
+            SAMPLE_COMM_VO_HdmiStop();
+        }
+        SAMPLE_COMM_VO_StopDev(i);
+        SAMPLE_COMM_VPSS_Stop(i, CHN_NUM, 1, FALSE);
     }
 
-    for(i=0; i<GrpCnt; i++)
-    {
-        MPP_CHN_S stSrcChn;
-        MPP_CHN_S stDestChn;
-
-        stSrcChn.enModId = HI_ID_VDEC;
-        stSrcChn.s32DevId = 0;
-        stSrcChn.s32ChnId = i;
-
-        stDestChn.enModId = HI_ID_VPSS;
-        stDestChn.s32DevId = i;
-        stDestChn.s32ChnId = 0;
-
-        s32Ret = HI_MPI_SYS_UnBind(&stSrcChn, &stDestChn);
-        ASSERT(0 == s32Ret);
-    }
-
-    SAMPLE_COMM_VO_StopChn(VoLayer[0], current_vo_mode[0], current_vo_chn[0]);
-    SAMPLE_COMM_VO_StopLayer(VoLayer[0]);
-    SAMPLE_COMM_VO_HdmiStop();
-    SAMPLE_COMM_VO_StopDev(VoDev[0]);
-    SAMPLE_COMM_VPSS_Stop(VoLayer[0], GrpCnt, 1, FALSE);
-    SAMPLE_COMM_VDEC_Stop(VdCnt);
+    SAMPLE_COMM_VDEC_Stop(CHN_NUM_TOTAL);
     SAMPLE_COMM_SYS_Exit();
 
     return TEA_RSLT_SUCCESS;
@@ -432,9 +457,9 @@ static tea_result_t tsk_cleanup(worker_t* worker)
 static tea_result_t create(struct N_node* nn)
 {
     int i;
-    int r;
+    int __attribute__((unused)) r;
 
-    for(i=0; i<DEC_CHN_NUM; i++)
+    for(i=0; i<CHN_NUM_TOTAL; i++)
     {
         enType[i] = PT_H265;
     }

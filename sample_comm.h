@@ -412,7 +412,7 @@ HI_S32 SAMPLE_COMM_VI_BindVpss(VI_CHN ViChn, VPSS_GRP VpssGrp, VPSS_CHN VpssChn)
 HI_S32 SAMPLE_COMM_VI_UnBindVpss(VI_CHN ViChn, VPSS_GRP VpssGrp, VPSS_CHN VpssChn);
 HI_S32 SAMPLE_COMM_VI_Mode2Size(SAMPLE_VI_MODE_E enViMode, VIDEO_NORM_E enNorm, RECT_S *pstCapRect, SIZE_S *pstDestSize);
 
-HI_BOOL is_chn_enabled(int chn);
+HI_BOOL is_chn_enabled(int vo, int chn);
 
 
 #ifdef __cplusplus

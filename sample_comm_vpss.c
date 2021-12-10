@@ -158,7 +158,7 @@ HI_S32 SAMPLE_COMM_VPSS_Start(VO_LAYER VoLayer, HI_S32 s32GrpCnt, SIZE_S *pstSiz
             }
         }
         
-        if(is_chn_enabled(VpssGrp))
+        if(is_chn_enabled(VoLayer, i))
         {
             /*** start vpss group ***/
             s32Ret = HI_MPI_VPSS_StartGrp(VpssGrp);
