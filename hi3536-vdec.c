@@ -110,6 +110,11 @@ static void start_vdec_chn(VDEC_CHN VdChn, SIZE_S* stSize, HI_BOOL bNoCreate)
         s32Ret = HI_MPI_VDEC_CreateChn(VdChn, &stVdecChnAttr);
         ASSERT(0 == s32Ret);
 
+        // 设置显示模式为 PREVIEW 实现实时预览。P10-3。
+        // 默认为 PLAYBACK 模式，查看 /proc/umap/vdec 时发现 FrmInVdec 高达 309 !
+        s32Ret = HI_MPI_VDEC_SetDisplayMode(VdChn, VIDEO_DISPLAY_MODE_PREVIEW);
+        ASSERT(0 == s32Ret);
+
         s32Ret = HI_MPI_VDEC_StartRecvStream(VdChn);
         ASSERT(0 == s32Ret);
 
