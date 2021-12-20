@@ -31,6 +31,7 @@
 #include "mpi_region.h"
 #include "mpi_hdmi.h"
 #include "sample_comm.h"
+#include <sys/stat.h>
 
 // environment
 
@@ -49,12 +50,116 @@ static SIZE_S stSize = {1920, 1080};
 #define CHN_NUM 4       // 每块屏幕最多显示的窗口数量。
 #define CHN_NUM_TOTAL   (2*CHN_NUM)
 static PAYLOAD_TYPE_E enType[CHN_NUM_TOTAL];
+static MUTEX_T lock;
+static int check_control;   // 控制 tsk_dec 线程检查时间间隔，避免检查过于频繁。
+static struct timespec prev[CHN_NUM_TOTAL]; // 解码通道上次成功接收输入码流的时刻。
+static int user_pic_control[CHN_NUM_TOTAL]; // 控制字：控制通道是否输出用户图片。
+static int user_pic_state[CHN_NUM_TOTAL];   // 状态字：表示通道当前是否正在输出用户图片。
 static int current_vo_mode[2];
 static int current_vo_chn[2];
 
 // input
 
 // monitor: statistics
+
+#define USER_PIC_WIDTH  960     // 根据参考代码必须为 16 整数倍。
+#define USER_PIC_HEIGHT 544     // 根据参考代码必须为 16 整数倍。
+#define USER_PIC_SIZE          (USER_PIC_WIDTH*USER_PIC_HEIGHT)
+#define USER_PIC_BUFFER_SIZE   (USER_PIC_WIDTH*USER_PIC_HEIGHT*3/2)
+
+static VIDEO_FRAME_INFO_S stUsrPicInfo;
+static VB_BLK u32BlkHandle;
+static VB_POOL u32PoolId;
+static int no_stream_mode = 0; // 0-不处理，相当于输出静帧或者黑屏；1-输出用户图片。
+
+static char* get_image_file(void)
+{
+    int r;
+    int i;
+    char* fpath = NULL;
+
+    for(i=1; ;i++)
+    {
+        r = xT_read_nolock_3(app_nn_root, &fpath, "hi3536_vdec/no_stream/image[%d]", i);
+        if(0 == r)
+        {
+            struct stat buf;
+            r = stat(fpath, &buf);
+            if(0 == r)
+            {
+                Debug("%s", fpath);
+                return fpath;
+            }
+        }
+        else
+        {
+            break;
+        }
+    }
+    ASSERT(0);
+    return NULL;
+}
+
+static HI_VOID VDEC_PREPARE_USERPIC(VIDEO_FRAME_INFO_S *pstUsrPicInfo)
+{
+    HI_U32   u32PhyAddr;
+    HI_VOID  *pVirAddr;
+    HI_U32 s32Ret = HI_SUCCESS;
+
+    u32BlkHandle = HI_MPI_VB_GetBlock(4, USER_PIC_BUFFER_SIZE, "anonymous");
+    if (VB_INVALID_HANDLE == u32BlkHandle || HI_ERR_VB_ILLEGAL_PARAM == u32BlkHandle)
+    {
+        ASSERT(0);
+        return;
+    }
+    u32PhyAddr = HI_MPI_VB_Handle2PhysAddr(u32BlkHandle);
+    u32PoolId = HI_MPI_VB_Handle2PoolId(u32BlkHandle);
+    ASSERT(u32PoolId=4);
+
+    HI_MPI_VB_MmapPool(u32PoolId);
+    s32Ret = HI_MPI_VB_GetBlkVirAddr(u32PoolId, u32PhyAddr, &pVirAddr);
+    if(s32Ret != HI_SUCCESS)
+    {
+        ASSERT(0);
+        HI_MPI_VB_ReleaseBlock(u32BlkHandle);
+        HI_MPI_VB_MunmapPool(u32PoolId);
+        return;
+    }
+
+    // 图片必须为 960X544 YUV420SP 格式。
+    // ffmpeg -i nostream.png -pix_fmt nv21 nostream.yuv
+    char* fname = get_image_file();
+    if(NULL != fname)
+    {
+        fread_p((void*) pVirAddr, 1, USER_PIC_BUFFER_SIZE, fname);
+    }
+
+    pstUsrPicInfo->u32PoolId = u32PoolId;
+    pstUsrPicInfo->stVFrame.enCompressMode = COMPRESS_MODE_NONE;
+    pstUsrPicInfo->stVFrame.enVideoFormat = VIDEO_FORMAT_LINEAR;
+    pstUsrPicInfo->stVFrame.enPixelFormat = PIXEL_FORMAT_YUV_SEMIPLANAR_420;
+    pstUsrPicInfo->stVFrame.u32Width = USER_PIC_WIDTH;
+    pstUsrPicInfo->stVFrame.u32Height = USER_PIC_HEIGHT;
+    pstUsrPicInfo->stVFrame.u32Field = VIDEO_FIELD_FRAME;
+    pstUsrPicInfo->stVFrame.u32PhyAddr[0] = u32PhyAddr;
+    pstUsrPicInfo->stVFrame.u32PhyAddr[1] = u32PhyAddr + USER_PIC_SIZE;
+    pstUsrPicInfo->stVFrame.u32Stride[0] = USER_PIC_WIDTH;
+    pstUsrPicInfo->stVFrame.u32Stride[1] = USER_PIC_WIDTH;
+    pstUsrPicInfo->stVFrame.u64pts = 0;
+}
+
+static HI_VOID VDEC_RELEASE_USERPIC()
+{
+    HI_S32 s32Ret = HI_SUCCESS;
+
+    s32Ret = HI_MPI_VB_ReleaseBlock(u32BlkHandle);
+    ASSERT(0 == s32Ret);
+
+    s32Ret = HI_MPI_VB_MunmapPool(u32PoolId);
+    ASSERT(0 == s32Ret);
+
+    (void) s32Ret;
+}
 
 // 约定：每个 VO 对应 4 通道。
 HI_BOOL is_chn_enabled(int vo, int chn)
@@ -77,6 +182,9 @@ static void stop_vdec_chn(VDEC_CHN VdChn, HI_BOOL bNoDestroy)
     HI_S32 __attribute__((unused)) s32Ret;
 
     Debug("STOP VDEC %d", VdChn);
+
+    s32Ret = HI_MPI_VDEC_DisableUserPic(VdChn);
+    ASSERT(0 == s32Ret);
 
     s32Ret = HI_MPI_VDEC_StopRecvStream(VdChn);
     ASSERT(0 == s32Ret);
@@ -115,6 +223,9 @@ static void start_vdec_chn(VDEC_CHN VdChn, SIZE_S* stSize, HI_BOOL bNoCreate)
         s32Ret = HI_MPI_VDEC_SetDisplayMode(VdChn, VIDEO_DISPLAY_MODE_PREVIEW);
         ASSERT(0 == s32Ret);
 
+        s32Ret = HI_MPI_VDEC_SetUserPic(VdChn, &stUsrPicInfo);
+        ASSERT(0 == s32Ret);
+
         s32Ret = HI_MPI_VDEC_StartRecvStream(VdChn);
         ASSERT(0 == s32Ret);
 
@@ -134,17 +245,23 @@ static void start_vdec_chn(VDEC_CHN VdChn, SIZE_S* stSize, HI_BOOL bNoCreate)
         ASSERT(0 == s32Ret);
     }
 
-    if(is_chn_enabled(VdChn/CHN_NUM, VdChn%CHN_NUM))
+// 即使解码通道不显示，仍继续解码，以尽量避免在切换显示不同解码通道时输出黑屏。
+//    if(is_chn_enabled(VdChn/CHN_NUM, VdChn%CHN_NUM))
     {
-        if(bNoCreate)
-        {
-            Debug("RESET VDEC %d", VdChn);
-            s32Ret = HI_MPI_VDEC_ResetChn(VdChn);
-            ASSERT(0 == s32Ret);
-        }
+//        if(bNoCreate)
+//        {
+//            Debug("RESET VDEC %d", VdChn);
+//            s32Ret = HI_MPI_VDEC_ResetChn(VdChn);
+//            ASSERT(0 == s32Ret);
+//        }
+
         Debug("START VDEC %d", VdChn);
+
         s32Ret = HI_MPI_VDEC_StartRecvStream(VdChn);
         ASSERT(0 == s32Ret);
+
+        user_pic_state[VdChn] = FALSE;
+        check_control = TRUE;
     }
 }
 
@@ -186,22 +303,25 @@ static tea_result_t tsk_init(worker_t* worker)
     // 不可能解 8 路 4K 吧？ -- 先预留 2 路吧。
     // 先调好 1080P 解码，再调 4K 解码。
     memset(&stVbConf, 0, sizeof(VB_CONF_S));
-    stVbConf.u32MaxPoolCnt = 4;
+    stVbConf.u32MaxPoolCnt = 5;
     stVbConf.astCommPool[0].u32BlkSize = (3840 * 2160 * 3) >> 1;
-    stVbConf.astCommPool[0].u32BlkCnt	 = 2*6;
+    stVbConf.astCommPool[0].u32BlkCnt  = 2*6;
     stVbConf.astCommPool[1].u32BlkSize = 3840*2160;
-    stVbConf.astCommPool[1].u32BlkCnt	 = 2*6;
+    stVbConf.astCommPool[1].u32BlkCnt  = 2*6;
     stVbConf.astCommPool[2].u32BlkSize = (1920 * 1080 * 3) >> 1;
-    stVbConf.astCommPool[2].u32BlkCnt	 = 6*CHN_NUM_TOTAL;
+    stVbConf.astCommPool[2].u32BlkCnt  = 6*CHN_NUM_TOTAL;
     stVbConf.astCommPool[3].u32BlkSize = 1920*1080;
-    stVbConf.astCommPool[3].u32BlkCnt	 = 6*CHN_NUM_TOTAL;
-
+    stVbConf.astCommPool[3].u32BlkCnt  = 6*CHN_NUM_TOTAL;
+    stVbConf.astCommPool[4].u32BlkSize = USER_PIC_BUFFER_SIZE;
+    stVbConf.astCommPool[4].u32BlkCnt  = 1;
     SAMPLE_COMM_SYS_Init(&stVbConf);
 
     VB_CONF_S stModVbConf;
 
     SAMPLE_COMM_VDEC_ModCommPoolConf(&stModVbConf, PT_H265, &stSize, CHN_NUM_TOTAL);
     s32Ret = SAMPLE_COMM_VDEC_InitModCommVb(&stModVbConf);
+
+    VDEC_PREPARE_USERPIC(&stUsrPicInfo);
 
     int BgColor;
     s32Ret = xT_read_int_3(worker->nn_inst, &BgColor, "BgColor");
@@ -284,6 +404,15 @@ static tea_result_t tsk_init(worker_t* worker)
 
     task_stream_setopt(worker, 0, stream_opt_rtp, (void*) FALSE);
 
+    for(i=0; i<CHN_NUM_TOTAL; i++)
+    {
+        prev[i].tv_sec = 0;
+        prev[i].tv_nsec = 0;
+        user_pic_control[i] = FALSE;
+        user_pic_state[i] = FALSE;
+    }
+    check_control = FALSE;
+
     return TEA_RSLT_SUCCESS;
 }
 
@@ -307,7 +436,7 @@ static void apply_vo_mode(int vo)
     ASSERT(0 == ret);
 }
 
-static tea_result_t tsk_repeat(worker_t* worker)
+static tea_result_t tsk_dec(worker_t* worker)
 {
     struct generic_rtp_header* generic_rtp_header;
     enum frame_flag flags;
@@ -332,7 +461,7 @@ static tea_result_t tsk_repeat(worker_t* worker)
     ret = task_stream_get_frame_3_retry(worker, 0, &stream_frame, &wait_time, &flags, (rtp_hdr_t**) &generic_rtp_header);
     if(RESULT_FAIL(ret))
     {
-        return 0;
+        goto EXIT_2;
     }
 
     if(0 == (flags & frame_flag_rtp)
@@ -352,10 +481,10 @@ static tea_result_t tsk_repeat(worker_t* worker)
 
     VdChn = generic_rtp_header->extension.stream_index;
 
-    if(!is_chn_enabled(VdChn/CHN_NUM, VdChn%CHN_NUM))
-    {
-        goto EXIT;
-    }
+//    if(!is_chn_enabled(VdChn/CHN_NUM, VdChn%CHN_NUM))
+//    {
+//        goto EXIT;
+//    }
 
     // TODO: 应该等待下一 I 帧到来再开始解码。
     if(PT_H264 == enType[VdChn] && stream_type_h265 == generic_rtp_header->frame.type)
@@ -368,6 +497,25 @@ static tea_result_t tsk_repeat(worker_t* worker)
         enType[VdChn] = PT_H264;
         restart_vdec_chn(VdChn, &stSize);
     }
+
+    LOCK(&lock);
+    clock_gettime(CLOCK_MONOTONIC, &prev[VdChn]);
+    user_pic_control[VdChn] = FALSE;
+    // 获取码流输入成功之后，立即结束输出用户图片。
+    if(user_pic_state[VdChn])
+    {
+        ret = HI_MPI_VDEC_DisableUserPic(VdChn);
+        ASSERT(0 == ret);
+
+        ret = HI_MPI_VDEC_StartRecvStream(VdChn);
+        ASSERT(0 == ret);
+
+        user_pic_state[VdChn] = FALSE;
+
+        // 停止输出用户图片
+        Debug("Chn %d: Stop output user pic", VdChn);
+    }
+    UNLOCK(&lock);
 
     VDEC_STREAM_S stStream;
 
@@ -398,7 +546,58 @@ static tea_result_t tsk_repeat(worker_t* worker)
 EXIT:
     ret = task_stream_release_frame(worker, 0);
 
+EXIT_2:
+    LOCK(&lock);
+    if(check_control)
+    {
+        for(i=0; i<CHN_NUM_TOTAL; i++)
+        {
+            if(user_pic_control[i] && !user_pic_state[i])
+            {
+                ret = HI_MPI_VDEC_StopRecvStream(i);
+                ASSERT(0 == ret);
+
+                // 延迟插入。
+                ret = HI_MPI_VDEC_EnableUserPic(i, 0);
+                ASSERT(0 == ret);
+
+                user_pic_state[i] = TRUE;
+
+                // 开始输出用户图片
+                Debug("Chn %d: Start output user pic", i);
+            }
+        }
+        check_control = FALSE;
+    }
+    UNLOCK(&lock);
+
     return ret_val;
+}
+
+static tea_result_t tsk_chk(worker_t* worker)
+{
+    struct timespec now,elapse;
+    int i;
+
+    SLEEP(1,0);
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    LOCK(&lock);
+    for(i=0; i<CHN_NUM_TOTAL; i++)
+    {
+        timeoutsub(&now, &prev[i], &elapse);
+        if(elapse.tv_sec > 3    // 应该是多少合适？
+             && !user_pic_control[i]
+             && 1 == no_stream_mode)
+        {
+            user_pic_control[i] = TRUE;
+            Debug("Ch %d: Enable User Picture", i);
+        }
+    }
+    check_control = TRUE;
+    UNLOCK(&lock);
+
+    return TEA_RSLT_SUCCESS;
 }
 
 static tea_result_t tsk_cleanup(worker_t* worker)
@@ -454,6 +653,7 @@ static tea_result_t tsk_cleanup(worker_t* worker)
     }
 
     SAMPLE_COMM_VDEC_Stop(CHN_NUM_TOTAL);
+    VDEC_RELEASE_USERPIC();
     SAMPLE_COMM_SYS_Exit();
 
     return TEA_RSLT_SUCCESS;
@@ -482,6 +682,11 @@ static tea_result_t create(struct N_node* nn)
         ASSERT(0 == r);
     }
 
+    INIT_LOCK(&lock);
+
+    r = xN_bind_int_variable_2(nn, "no_stream/mode", &no_stream_mode);
+    ASSERT(0 == r);
+
     return TEA_RSLT_SUCCESS;
 }
 
@@ -495,7 +700,7 @@ static tea_result_t apply(struct N_node* nn)
     return TEA_RSLT_SUCCESS;
 }
 
-static task_func_t repeat_table[] = {tsk_repeat, NULL};
+static task_func_t repeat_table[] = {tsk_dec, tsk_chk, NULL};
 
 static struct task_logic logic =
 {
