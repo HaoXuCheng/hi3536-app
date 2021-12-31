@@ -43,8 +43,8 @@ static int vo_mode[2];
 static int vo_chn[2]; // 取值 0~3
 static int IntfType[2];
 
-// TODO: 支持 4K，一路？二路？
-static SIZE_S stSize = {1920, 1080};
+static SIZE_S stSize_1080 = {1920, 1080};
+static SIZE_S stSize_4k = {3840, 2160};
 
 // internal state
 #define CHN_NUM 4       // 每块屏幕最多显示的窗口数量。
@@ -69,7 +69,7 @@ static int current_vo_chn[2];
 
 static VIDEO_FRAME_INFO_S stUsrPicInfo;
 static VB_BLK u32BlkHandle;
-static VB_POOL u32PoolId;
+static VB_POOL u32PoolId = 0;
 static int no_stream_mode = 0; // 0-不处理，相当于输出静帧或者黑屏；1-输出用户图片。
 
 static char* get_image_file(void)
@@ -106,15 +106,13 @@ static HI_VOID VDEC_PREPARE_USERPIC(VIDEO_FRAME_INFO_S *pstUsrPicInfo)
     HI_VOID  *pVirAddr;
     HI_U32 s32Ret = HI_SUCCESS;
 
-    u32BlkHandle = HI_MPI_VB_GetBlock(4, USER_PIC_BUFFER_SIZE, "anonymous");
+    u32BlkHandle = HI_MPI_VB_GetBlock(u32PoolId, USER_PIC_BUFFER_SIZE, "anonymous");
     if (VB_INVALID_HANDLE == u32BlkHandle || HI_ERR_VB_ILLEGAL_PARAM == u32BlkHandle)
     {
         ASSERT(0);
         return;
     }
     u32PhyAddr = HI_MPI_VB_Handle2PhysAddr(u32BlkHandle);
-    u32PoolId = HI_MPI_VB_Handle2PoolId(u32BlkHandle);
-    ASSERT(u32PoolId=4);
 
     HI_MPI_VB_MmapPool(u32PoolId);
     s32Ret = HI_MPI_VB_GetBlkVirAddr(u32PoolId, u32PhyAddr, &pVirAddr);
@@ -204,7 +202,7 @@ static void start_vdec_chn(VDEC_CHN VdChn, SIZE_S* stSize, HI_BOOL bNoCreate)
     {
         VDEC_CHN_ATTR_S stVdecChnAttr;
 
-        Debug("Create VDEC %d, enType: %d", VdChn, enType[VdChn]);
+        Debug("Create VDEC %d, enType: %d, W: %d, H: %d", VdChn, enType[VdChn], stSize->u32Width, stSize->u32Height);
 
         stVdecChnAttr.enType       = enType[VdChn];
         stVdecChnAttr.u32BufSize   = stSize->u32Width * stSize->u32Height;
@@ -278,7 +276,7 @@ static void VDEC_Start(VO_LAYER VoLayer, HI_BOOL bNoCreate)
     for(i=0; i<CHN_NUM; i++)
     {
         VDEC_CHN VdChn = i + VoLayer*CHN_NUM;
-        start_vdec_chn(VdChn, &stSize, bNoCreate);
+        start_vdec_chn(VdChn, &stSize_4k, bNoCreate);
     }
 }
 
@@ -300,25 +298,21 @@ static tea_result_t tsk_init(worker_t* worker)
 
     VB_CONF_S stVbConf;
 
-    // 不可能解 8 路 4K 吧？ -- 先预留 2 路吧。
-    // 先调好 1080P 解码，再调 4K 解码。
+    // 先支持 8 路同时解码，每路都支持 4K 输入。
     memset(&stVbConf, 0, sizeof(VB_CONF_S));
-    stVbConf.u32MaxPoolCnt = 5;
-    stVbConf.astCommPool[0].u32BlkSize = (3840 * 2160 * 3) >> 1;
-    stVbConf.astCommPool[0].u32BlkCnt  = 2*6;
-    stVbConf.astCommPool[1].u32BlkSize = 3840*2160;
-    stVbConf.astCommPool[1].u32BlkCnt  = 2*6;
-    stVbConf.astCommPool[2].u32BlkSize = (1920 * 1080 * 3) >> 1;
-    stVbConf.astCommPool[2].u32BlkCnt  = 6*CHN_NUM_TOTAL;
-    stVbConf.astCommPool[3].u32BlkSize = 1920*1080;
-    stVbConf.astCommPool[3].u32BlkCnt  = 6*CHN_NUM_TOTAL;
-    stVbConf.astCommPool[4].u32BlkSize = USER_PIC_BUFFER_SIZE;
-    stVbConf.astCommPool[4].u32BlkCnt  = 1;
+    stVbConf.u32MaxPoolCnt = 3;
+    stVbConf.astCommPool[0].u32BlkSize = USER_PIC_BUFFER_SIZE;
+    stVbConf.astCommPool[0].u32BlkCnt  = 1;
+    stVbConf.astCommPool[1].u32BlkSize = (3840 * 2176 * 3) >> 1;
+    stVbConf.astCommPool[1].u32BlkCnt  = 2;
+    stVbConf.astCommPool[2].u32BlkSize = (1920 * 1088 * 3) >> 1;
+    stVbConf.astCommPool[2].u32BlkCnt  = 2;
+
     SAMPLE_COMM_SYS_Init(&stVbConf);
 
     VB_CONF_S stModVbConf;
 
-    SAMPLE_COMM_VDEC_ModCommPoolConf(&stModVbConf, PT_H265, &stSize, CHN_NUM_TOTAL);
+    SAMPLE_COMM_VDEC_ModCommPoolConf(&stModVbConf, PT_H265, &stSize_4k, CHN_NUM_TOTAL);
     s32Ret = SAMPLE_COMM_VDEC_InitModCommVb(&stModVbConf);
 
     VDEC_PREPARE_USERPIC(&stUsrPicInfo);
@@ -335,8 +329,16 @@ static tea_result_t tsk_init(worker_t* worker)
         // start VDEC
         VDEC_Start(i, FALSE);
 
-        // start VPSS
-        SAMPLE_COMM_VPSS_Start(i, CHN_NUM, &stSize, 1, NULL, vo_mode[i], FALSE);
+        if(0 == i)
+        {
+            // start VPSS
+            SAMPLE_COMM_VPSS_Start(i, CHN_NUM, &stSize_4k, 1, NULL, vo_mode[i], FALSE);
+        }
+        else
+        {
+            // start VPSS
+            SAMPLE_COMM_VPSS_Start(i, CHN_NUM, &stSize_1080, 1, NULL, vo_mode[i], FALSE);
+        }
 
         // start VO
         VO_PUB_ATTR_S stVoPubAttr;
@@ -429,7 +431,14 @@ static void apply_vo_mode(int vo)
     VDEC_Stop(vo, TRUE);
     VDEC_Start(vo, TRUE);
 
-    ret = SAMPLE_COMM_VPSS_Start(vo, CHN_NUM, &stSize, 1, NULL, vo_mode[vo], TRUE);
+    if(0 == vo)
+    {
+        ret = SAMPLE_COMM_VPSS_Start(vo, CHN_NUM, &stSize_4k, 1, NULL, vo_mode[vo], TRUE);
+    }
+    else
+    {
+        ret = SAMPLE_COMM_VPSS_Start(vo, CHN_NUM, &stSize_1080, 1, NULL, vo_mode[vo], TRUE);
+    }
     ASSERT(0 == ret);
 
     ret = SAMPLE_COMM_VO_StartChn(vo, vo_mode[vo], vo_chn[vo]);
@@ -490,12 +499,12 @@ static tea_result_t tsk_dec(worker_t* worker)
     if(PT_H264 == enType[VdChn] && stream_type_h265 == generic_rtp_header->frame.type)
     {
         enType[VdChn] = PT_H265;
-        restart_vdec_chn(VdChn, &stSize);
+        restart_vdec_chn(VdChn, &stSize_4k);
     }
     else if(PT_H265 == enType[VdChn] && stream_type_h264 == generic_rtp_header->frame.type)
     {
         enType[VdChn] = PT_H264;
-        restart_vdec_chn(VdChn, &stSize);
+        restart_vdec_chn(VdChn, &stSize_4k);
     }
 
     LOCK(&lock);
