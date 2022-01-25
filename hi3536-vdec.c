@@ -62,8 +62,8 @@ static int current_vo_chn[2];
 
 // monitor: statistics
 
-#define USER_PIC_WIDTH  1920   // 根据参考代码必须为 16 整数倍。
-#define USER_PIC_HEIGHT 1088   // 根据参考代码必须为 16 整数倍。
+#define USER_PIC_WIDTH  1920
+#define USER_PIC_HEIGHT 1080
 #define USER_PIC_SIZE          (USER_PIC_WIDTH*USER_PIC_HEIGHT)
 #define USER_PIC_BUFFER_SIZE   (USER_PIC_WIDTH*USER_PIC_HEIGHT*3/2)
 
@@ -124,23 +124,23 @@ static HI_VOID VDEC_PREPARE_USERPIC(VIDEO_FRAME_INFO_S *pstUsrPicInfo)
         return;
     }
 
-    // 图片必须为 960X544 YUV420SP 格式。
+    // 图片必须为 1920x1080 YUV420SP 格式。
     // ffmpeg -i nostream.png -pix_fmt nv21 nostream.yuv
     char* fname = get_image_file();
     FILE* fp;
     fp = fopen(fname, "rb");
     if(NULL != fname)
     {
-        // y
-        fread( (void*) pVirAddr, 1, 1920*1080, fp);
-        memset((void*) pVirAddr + 1920*1080, 0, 1920*8);
-        // v
-        fread( (void*) pVirAddr + USER_PIC_SIZE, 1, 1920*1080/4, fp);
-        memset((void*) pVirAddr + USER_PIC_SIZE + 1920*1080/4, 0, 1920*8/4);
-        // u
-        fread( (void*) pVirAddr + USER_PIC_SIZE*5/4, 1, 1920*1080/4, fp);
-        memset((void*) pVirAddr + USER_PIC_SIZE + USER_PIC_SIZE*5/4 + 1920*1080/4, 0, 1920*8/4);
-
+        size_t l;
+        // Y
+        l = fread( (void*) pVirAddr, 1, 1920*1080, fp);
+        ASSERT(1920*1080 == l);
+        // V
+        l = fread( (void*) pVirAddr + USER_PIC_SIZE, 1, 1920*1080/4, fp);
+        ASSERT(1920*1080/4 == l);
+        // U
+        l = fread( (void*) pVirAddr + USER_PIC_SIZE*5/4, 1, 1920*1080/4, fp);
+        ASSERT(1920*1080/4 == l);
         fclose(fp);
     }
 
