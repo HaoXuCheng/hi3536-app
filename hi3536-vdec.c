@@ -341,16 +341,8 @@ static tea_result_t tsk_init(worker_t* worker)
         // start VDEC
         VDEC_Start(i, FALSE);
 
-        if(0 == i)
-        {
-            // start VPSS
-            SAMPLE_COMM_VPSS_Start(i, CHN_NUM, &stSize_4k, 1, NULL, vo_mode[i], FALSE);
-        }
-        else
-        {
-            // start VPSS
-            SAMPLE_COMM_VPSS_Start(i, CHN_NUM, &stSize_1080, 1, NULL, vo_mode[i], FALSE);
-        }
+        // start VPSS
+        SAMPLE_COMM_VPSS_Start(i, CHN_NUM, &stSize_4k, 1, NULL, vo_mode[i], FALSE);
 
         // start VO
         VO_PUB_ATTR_S stVoPubAttr;
