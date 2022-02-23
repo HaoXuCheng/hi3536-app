@@ -472,7 +472,6 @@ static tea_result_t tsk_dec(worker_t* worker)
     {
         if(current_vo_mode[i] != vo_mode[i] || current_vo_chn[i] != vo_chn[i])
         {
-            ASSERT(0 == i);
             apply_vo_mode(i);
             current_vo_mode[i] = vo_mode[i];
             current_vo_chn[i] = vo_chn[i];
