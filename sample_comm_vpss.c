@@ -128,21 +128,8 @@ HI_S32 SAMPLE_COMM_VPSS_Start(VO_LAYER VoLayer, HI_S32 s32GrpCnt, SIZE_S *pstSiz
             /* Set Vpss Chn attr */
             stChnAttr.bSpEn = HI_FALSE;
             stChnAttr.bUVInvert = HI_FALSE;
+            stChnAttr.bBorderEn = HI_FALSE;
 
-            if(VO_MODE_4MUX == voMode)
-            {
-                stChnAttr.bBorderEn = HI_TRUE;
-                stChnAttr.stBorder.u32Color = 0xff00;
-                stChnAttr.stBorder.u32LeftWidth = 2;
-                stChnAttr.stBorder.u32RightWidth = 2;
-                stChnAttr.stBorder.u32TopWidth = 2;
-                stChnAttr.stBorder.u32BottomWidth = 2;
-            }
-            else
-            {
-                stChnAttr.bBorderEn = HI_FALSE;
-            }
-            
             s32Ret = HI_MPI_VPSS_SetChnAttr(VpssGrp, VpssChn, &stChnAttr);
             if (s32Ret != HI_SUCCESS)
             {
