@@ -118,7 +118,7 @@ extern "C"{
 #define ALIGN_UP(x, a)              ((x+a-1)&(~(a-1)))
 #define ALIGN_BACK(x, a)              ((a) * (((x) / (a))))
 
-#define SAMPLE_SYS_ALIGN_WIDTH  16		
+#define SAMPLE_SYS_ALIGN_WIDTH  16
 #define VO_BKGRD_BLUE           0x0000FF
 
 #define HD_WIDTH                1920
@@ -315,8 +315,8 @@ HI_S32 SAMPLE_COMM_VDEC_UnBindVenc(VDEC_CHN VdChn,VENC_CHN VeChn);
 HI_S32 SAMPLE_COMM_VDEC_MemConfig(HI_VOID);
 
 HI_S32 SAMPLE_COMM_VPSS_MemConfig();
-HI_S32 SAMPLE_COMM_VPSS_Start(VO_LAYER VoLayer, HI_S32 s32GrpCnt, SIZE_S *pstSize, HI_S32 s32ChnCnt, VPSS_GRP_ATTR_S *pstVpssGrpAttr, HI_S32 voMode, HI_BOOL bNoCreate);
-HI_S32 SAMPLE_COMM_VPSS_Stop(VO_LAYER VoLayer, HI_S32 s32GrpCnt, HI_S32 s32ChnCnt, HI_BOOL bNoDestroy) ;
+HI_S32 SAMPLE_COMM_VPSS_Start(VDEC_CHN VdChn, SIZE_S *pstSize,HI_BOOL bNoCreate);
+HI_S32 SAMPLE_COMM_VPSS_Stop(VDEC_CHN VdChn,HI_BOOL bNoDestroy);
 HI_S32 SAMPLE_COMM_DisableVpssPreScale(VPSS_GRP VpssGrp,SIZE_S stSize);
 HI_S32 SAMPLE_COMM_EnableVpssPreScale(VPSS_GRP VpssGrp,SIZE_S stSize);
 
@@ -413,6 +413,8 @@ HI_S32 SAMPLE_COMM_VI_UnBindVpss(VI_CHN ViChn, VPSS_GRP VpssGrp, VPSS_CHN VpssCh
 HI_S32 SAMPLE_COMM_VI_Mode2Size(SAMPLE_VI_MODE_E enViMode, VIDEO_NORM_E enNorm, RECT_S *pstCapRect, SIZE_S *pstDestSize);
 
 HI_BOOL is_chn_enabled(int vo, int chn);
+
+static void Check_Vdec_Chn(HI_BOOL bNoCreate);
 
 
 #ifdef __cplusplus

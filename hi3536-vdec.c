@@ -47,7 +47,7 @@ static SIZE_S stSize_1080 = {1920, 1080};
 static SIZE_S stSize_4k = {3840, 2160};
 
 // internal state
-#define CHN_NUM 4       // 每块屏幕最多显示的窗口数量。
+#define CHN_NUM 9       // 每块屏幕最多显示的窗口数量。
 #define CHN_NUM_TOTAL   (2*CHN_NUM)
 static PAYLOAD_TYPE_E enType[CHN_NUM_TOTAL];
 static MUTEX_T lock;
@@ -58,6 +58,13 @@ static int user_pic_state[CHN_NUM_TOTAL];   // 状态字：表示通道当前是
 static int current_vo_mode[2];
 static int current_vo_chn[2];
 
+static FILE *fp1;
+static FILE *fp2;
+static int sig=0;
+static int num=0;
+static int Time_num=0;
+static char buf1[20];
+static char buf2[20];
 // input
 
 // monitor: statistics
@@ -174,6 +181,10 @@ static HI_VOID VDEC_RELEASE_USERPIC()
 // 约定：每个 VO 对应 4 通道。
 HI_BOOL is_chn_enabled(int vo, int chn)
 {
+    if(VO_MODE_9MUX == vo_mode[vo])
+    {
+        return TRUE;
+    }
     if(VO_MODE_4MUX == vo_mode[vo])
     {
         return TRUE;
@@ -288,7 +299,7 @@ static void VDEC_Start(VO_LAYER VoLayer, HI_BOOL bNoCreate)
     for(i=0; i<CHN_NUM; i++)
     {
         VDEC_CHN VdChn = i + VoLayer*CHN_NUM;
-        start_vdec_chn(VdChn, &stSize_4k, bNoCreate);
+        start_vdec_chn(VdChn, &stSize_1080, bNoCreate);
     }
 }
 
@@ -300,6 +311,70 @@ static void VDEC_Stop(VO_LAYER VoLayer, HI_BOOL bNoDestroy)
         VDEC_CHN VdChn = i + VoLayer*CHN_NUM;
         stop_vdec_chn(VdChn, bNoDestroy);
     }
+}
+
+static void VPSS_Start(VO_LAYER VoLayer, HI_BOOL bNoCreate)
+{
+    int i;
+    for(i=0; i<CHN_NUM; i++)
+    {
+        VDEC_CHN VdChn = i + VoLayer*CHN_NUM;
+        SAMPLE_COMM_VPSS_Start(VdChn, &stSize_4k, bNoCreate);
+    }
+}
+
+static void VPSS_Stop(VO_LAYER VoLayer,HI_BOOL bNoDestroy)
+{
+    int i;
+    for(i=0; i<CHN_NUM; i++)
+    {
+        VDEC_CHN VdChn = i + VoLayer*CHN_NUM;
+        SAMPLE_COMM_VPSS_Stop(VdChn, bNoDestroy);
+    }
+}
+
+static void Check_Vdec_Chn(HI_BOOL bNoCreate)
+{
+    if(num==4)
+    {
+        int i;
+        int MaxW,MaxH,Width,Height;
+        int ret;
+        system_close_fd("cat /proc/umap/vdec | sed '10,27 !d' | sed 's/[[:space:]][[:space:]]*/ /g ' | cut -d ' ' -f 5-6 > /tmp/x");
+        system_close_fd("cat /proc/umap/vdec | sed '10,27 !d' | sed 's/[[:space:]][[:space:]]*/ /g ' | cut -d ' ' -f 8 > /tmp/y");
+        fp1=fopen("/tmp/x", "r");
+        fp2=fopen("/tmp/y", "r");
+        num=0;
+        for(i=0;i<18;i++)
+        {
+            memset(buf1,0,20);
+            fread(buf1,10,1,fp1);
+            ret=sscanf(buf1,"%4d %4d",&MaxW,&MaxH);
+            ASSERT(ret==2);
+            memset(buf2,0,20);
+            fgets(buf2,6,fp2);
+            ret=sscanf(buf2,"%4d",&Height);
+            ASSERT(ret==1);
+            if(MaxW==3840&&MaxH==2160)
+            {
+                num++;
+                if(((user_pic_control[i] == FALSE)&&(Height<1200)&&(Height>0))||((user_pic_control[i] == TRUE)&&(Height>0)))
+                {
+                    --num;
+                    sig=2;
+                }
+            }
+
+            if(sig==2)
+            {
+                restart_vdec_chn(i, &stSize_1080);
+                sig=0;
+            }
+        }
+        fclose(fp1);
+        fclose(fp2);
+    }
+
 }
 
 static tea_result_t tsk_init(worker_t* worker)
@@ -342,7 +417,7 @@ static tea_result_t tsk_init(worker_t* worker)
         VDEC_Start(i, FALSE);
 
         // start VPSS
-        SAMPLE_COMM_VPSS_Start(i, CHN_NUM, &stSize_4k, 1, NULL, vo_mode[i], FALSE);
+        VPSS_Start(i,FALSE);
 
         // start VO
         VO_PUB_ATTR_S stVoPubAttr;
@@ -429,21 +504,12 @@ static void apply_vo_mode(int vo)
     ret = SAMPLE_COMM_VO_StopChn(vo, current_vo_mode[vo], current_vo_chn[vo]);
     ASSERT(0 == ret);
 
-    ret = SAMPLE_COMM_VPSS_Stop(vo, CHN_NUM, 1, TRUE);
-    ASSERT(0 == ret);
+    VPSS_Stop(vo, TRUE);
 
     VDEC_Stop(vo, TRUE);
     VDEC_Start(vo, TRUE);
 
-    if(0 == vo)
-    {
-        ret = SAMPLE_COMM_VPSS_Start(vo, CHN_NUM, &stSize_4k, 1, NULL, vo_mode[vo], TRUE);
-    }
-    else
-    {
-        ret = SAMPLE_COMM_VPSS_Start(vo, CHN_NUM, &stSize_1080, 1, NULL, vo_mode[vo], TRUE);
-    }
-    ASSERT(0 == ret);
+    VPSS_Start(vo, TRUE);
 
     ret = SAMPLE_COMM_VO_StartChn(vo, vo_mode[vo], vo_chn[vo]);
     ASSERT(0 == ret);
@@ -508,6 +574,24 @@ static tea_result_t tsk_dec(worker_t* worker)
     {
         enType[VdChn] = PT_H264;
         restart_vdec_chn(VdChn, &stSize_4k);
+        num++;
+    }
+    VDEC_CHN_STAT_S status;
+    HI_MPI_VDEC_Query(VdChn, &status);
+
+    if(0!=status.stVdecDecErr.s32PicSizeErrSet)
+    {
+        if(num<4)
+        {
+            num++;
+            restart_vdec_chn(VdChn, &stSize_4k);
+        }
+    }
+
+    if(sig==1)
+    {
+        Check_Vdec_Chn(FALSE);
+        sig=0;
     }
 
     LOCK(&lock);
@@ -548,12 +632,6 @@ static tea_result_t tsk_dec(worker_t* worker)
     {
         Debug("Chn %d: %x", VdChn, ret);
     }
-
-//    VDEC_CHN_STAT_S status;
-//    ret = HI_MPI_VDEC_Query(VdChn, &status);
-//    if(0 == ret)
-//    {
-//    }
 
 EXIT:
     ret = task_stream_release_frame(worker, 0);
@@ -606,8 +684,16 @@ static tea_result_t tsk_chk(worker_t* worker)
             Debug("Ch %d: Enable User Picture", i);
         }
     }
+
     check_control = TRUE;
     UNLOCK(&lock);
+
+    Time_num++;
+    if(Time_num==5)
+    {
+        sig=1;
+        Time_num=0;
+    }
 
     return TEA_RSLT_SUCCESS;
 }
@@ -661,7 +747,7 @@ static tea_result_t tsk_cleanup(worker_t* worker)
             SAMPLE_COMM_VO_HdmiStop();
         }
         SAMPLE_COMM_VO_StopDev(i);
-        SAMPLE_COMM_VPSS_Stop(i, CHN_NUM, 1, FALSE);
+        VPSS_Stop(i, FALSE);
     }
 
     SAMPLE_COMM_VDEC_Stop(CHN_NUM_TOTAL);
