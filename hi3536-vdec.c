@@ -574,7 +574,6 @@ static tea_result_t tsk_dec(worker_t* worker)
     {
         enType[VdChn] = PT_H264;
         restart_vdec_chn(VdChn, &stSize_4k);
-        num++;
     }
     VDEC_CHN_STAT_S status;
     HI_MPI_VDEC_Query(VdChn, &status);
