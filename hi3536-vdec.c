@@ -335,7 +335,7 @@ static void VPSS_Stop(VO_LAYER VoLayer,HI_BOOL bNoDestroy)
 
 static void Check_Vdec_Chn(HI_BOOL bNoCreate)
 {
-    if(num==4)
+    if(num>=4)
     {
         int i;
         int MaxW,MaxH,Width,Height;
@@ -568,12 +568,12 @@ static tea_result_t tsk_dec(worker_t* worker)
     if(PT_H264 == enType[VdChn] && stream_type_h265 == generic_rtp_header->frame.type)
     {
         enType[VdChn] = PT_H265;
-        restart_vdec_chn(VdChn, &stSize_4k);
+        restart_vdec_chn(VdChn, &stSize_1080);
     }
     else if(PT_H265 == enType[VdChn] && stream_type_h264 == generic_rtp_header->frame.type)
     {
         enType[VdChn] = PT_H264;
-        restart_vdec_chn(VdChn, &stSize_4k);
+        restart_vdec_chn(VdChn, &stSize_1080);
     }
     VDEC_CHN_STAT_S status;
     HI_MPI_VDEC_Query(VdChn, &status);
